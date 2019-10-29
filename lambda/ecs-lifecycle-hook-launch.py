@@ -85,7 +85,50 @@ def container_instance_healthy(ecs_c, cluster_name, instance_id, context):
                 if container_instance["ec2InstanceId"] == instance_id:
                     if container_instance["status"] == "ACTIVE":
                         if container_instance["agentConnected"] is True:
-                            return(True)
+                            tasks_stable = False
+                            paginator = ecs_c.get_paginator('list_tasks')
+                            tasks = paginator.paginate(
+                                cluster=cluster_name,
+                                PaginationConfig={
+                                    "PageSize": 100
+                                }
+                            )
+                    
+                            container_tasks = 0
+                            for task in tasks:
+                                if len(task["taskArns"]) < 1:
+                                    continue # no tasks
+                    
+                                tasks_response = ecs_c.describe_tasks(
+                                    cluster=cluster_name,
+                                    tasks=task["taskArns"]
+                                )
+
+                                for task_status in tasks_response["tasks"]:
+                                    if task_status["containerInstanceArn"] != container_instance["containerInstanceArn"]:
+                                        continue # ignore tasks from other container instances
+
+                                    container_tasks = container_tasks + 1
+
+                                    if task_status["lastStatus"] == "RUNNING":
+                                        print("One or more tasks on new instance has been verified RUNNING!")
+                                        tasks_stable = True
+                                    else:
+                                        print(
+                                            "Task found on new instance, but status is {}, desired is {}".format(
+                                                task_status["lastStatus"],
+                                                task_status["desiredStatus"]
+                                            )
+                                        )
+                            
+                            # do NOT return success until we have one or more RUNNING tasks!
+                            # Otherwise we risk having an EC2 instance placed into ELB Target Group
+                            # before it can accept traffic.
+                            if tasks_stable == True:
+                                return(True) # one or more tasks are RUNNING
+                                
+                            if container_tasks == 0:
+                                print("Container agent is connected, but no tasks yet exist")
 
         if context.get_remaining_time_in_millis() <= 40000:
             return(False)
